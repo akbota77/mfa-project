@@ -1,7 +1,5 @@
 package com.example.myapp.mfa
 
-import java.util.UUID
-
 private const val DEFAULT_ADDRESS = "00:00:00:00:00:00"
 
 enum class BiometricMode(val label: String) {
@@ -36,9 +34,7 @@ data class BiometricSnapshot(
     val signalQuality: Int,
     val token: String,
     val dfaHash: String
-) {
-    val referenceId: String = UUID.randomUUID().toString()
-}
+)
 
 data class ArduinoDecision(
     val sessionId: String?,
@@ -67,4 +63,3 @@ data class MfaUiState(
     val canNavigateToBiometrics: Boolean = bluetoothState is BluetoothState.Connected
     val canSendPacket: Boolean = canNavigateToBiometrics && biometricValue != null
 }
-

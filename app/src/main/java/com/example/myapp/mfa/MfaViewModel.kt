@@ -1,9 +1,15 @@
 package com.example.myapp.mfa
 
+import android.annotation.SuppressLint
 import android.app.Application
 import android.bluetooth.BluetoothAdapter
+import android.bluetooth.BluetoothDevice
 import android.bluetooth.BluetoothManager
 import android.bluetooth.BluetoothSocket
+import android.content.BroadcastReceiver
+import android.content.Context
+import android.content.Intent
+import android.content.IntentFilter
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
@@ -21,6 +27,7 @@ import kotlin.random.Random
 
 private val HC05_UUID: UUID = UUID.fromString("00001101-0000-1000-8000-00805F9B34FB")
 
+@SuppressLint("MissingPermission")
 class MfaViewModel(application: Application) : AndroidViewModel(application) {
 
     private val _uiState = MutableStateFlow(MfaUiState())
@@ -32,6 +39,32 @@ class MfaViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     private var bluetoothSocket: BluetoothSocket? = null
+
+    private val receiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context, intent: Intent) {
+            val action: String? = intent.action
+            if (BluetoothDevice.ACTION_FOUND == action) {
+                val device: BluetoothDevice? = intent.getParcelableExtra(BluetoothDevice.EXTRA_DEVICE)
+                if (device?.name == "HC-05") {
+                    updateDeviceAddress(device.address)
+                    bluetoothAdapter?.cancelDiscovery()
+                }
+            }
+        }
+    }
+
+    init {
+        val filter = IntentFilter(BluetoothDevice.ACTION_FOUND)
+        application.registerReceiver(receiver, filter)
+    }
+
+    fun startDiscovery() {
+        if (bluetoothAdapter?.isEnabled == true) {
+            if (bluetoothAdapter?.isDiscovering == false) {
+                bluetoothAdapter?.startDiscovery()
+            }
+        }
+    }
 
     fun updateUserId(value: String) {
         _uiState.value = _uiState.value.copy(userId = value)
@@ -63,8 +96,10 @@ class MfaViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch(Dispatchers.IO) {
             updateBluetoothState(BluetoothState.Connecting(address))
             try {
+                if (adapter.isDiscovering) {
+                    adapter.cancelDiscovery()
+                }
                 val remoteDevice = adapter.getRemoteDevice(address)
-                adapter.cancelDiscovery()
                 bluetoothSocket?.close()
                 val socket =
                     remoteDevice.createInsecureRfcommSocketToServiceRecord(HC05_UUID)
@@ -72,6 +107,7 @@ class MfaViewModel(application: Application) : AndroidViewModel(application) {
                 bluetoothSocket = socket
                 updateBluetoothState(BluetoothState.Connected(remoteDevice.name))
                 appendLog("Connected to ${remoteDevice.name ?: "HC-05"}")
+                startReadingData(socket)
             } catch (e: Exception) {
                 bluetoothSocket = null
                 updateBluetoothState(
@@ -79,6 +115,32 @@ class MfaViewModel(application: Application) : AndroidViewModel(application) {
                 )
                 appendLog("Connection error: ${e.localizedMessage}")
             }
+        }
+    }
+
+    private fun startReadingData(socket: BluetoothSocket) {
+        viewModelScope.launch(Dispatchers.IO) {
+            appendLog("Now listening for incoming data")
+            val reader = BufferedReader(InputStreamReader(socket.inputStream))
+            while (socket.isConnected) {
+                try {
+                    val response = reader.readLine() ?: break // End of stream
+                    val decision = parseDecision(response)
+                    _uiState.value = _uiState.value.copy(
+                        lastDecision = decision,
+                        receivedJson = if (decision.rawJson.isNotBlank()) decision.rawJson else response,
+                        sessionId = decision.sessionId,
+                        finalResult = decision.displayResult,
+                        currentScreen = MfaScreen.Result
+                    )
+                    appendLog("Arduino response: ${decision.result}")
+                } catch (e: Exception) {
+                    appendLog("Read error: ${e.localizedMessage}")
+                    updateBluetoothState(BluetoothState.Error("Read failed: ${e.message}"))
+                    break
+                }
+            }
+            appendLog("Stopped listening for data")
         }
     }
 
@@ -95,6 +157,7 @@ class MfaViewModel(application: Application) : AndroidViewModel(application) {
             }
         }
     }
+
     fun navigateToBiometrics() {
         if (_uiState.value.canNavigateToBiometrics) {
             _uiState.value = _uiState.value.copy(currentScreen = MfaScreen.Biometrics)
@@ -152,8 +215,9 @@ class MfaViewModel(application: Application) : AndroidViewModel(application) {
             appendLog("No biometric result available")
             return
         }
-        if (socket == null) {
-            appendLog("Bluetooth socket is null")
+        if (socket == null || !socket.isConnected) {
+            appendLog("Bluetooth socket is not connected")
+            updateBluetoothState(BluetoothState.Error("Not connected"))
             return
         }
 
@@ -164,20 +228,29 @@ class MfaViewModel(application: Application) : AndroidViewModel(application) {
                 socket.outputStream.flush()
                 updateLastJson(payload)
                 appendLog("Sent auth packet (${payload.length} chars)")
-
-                val reader = BufferedReader(InputStreamReader(socket.inputStream))
-                val response = reader.readLine()
-                val decision = parseDecision(response)
-                _uiState.value = _uiState.value.copy(
-                    lastDecision = decision,
-                    receivedJson = if (decision.rawJson.isNotBlank()) decision.rawJson else response.orEmpty(),
-                    sessionId = decision.sessionId,
-                    finalResult = decision.displayResult,
-                    currentScreen = MfaScreen.Result
-                )
-                appendLog("Arduino response: ${decision.result}")
             } catch (e: Exception) {
                 appendLog("I/O error: ${e.localizedMessage}")
+            }
+        }
+    }
+    
+    fun sendTestData() {
+        val socket = bluetoothSocket
+        if (socket == null || !socket.isConnected) {
+            appendLog("Bluetooth socket is not connected")
+            updateBluetoothState(BluetoothState.Error("Not connected"))
+            return
+        }
+
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                val payload = "{\"test\": \"hello\"}"
+                socket.outputStream.write(payload.plus("\n").toByteArray())
+                socket.outputStream.flush()
+                updateLastJson(payload)
+                appendLog("Sent test data: $payload")
+            } catch (e: Exception) {
+                appendLog("I/O error while sending test data: ${e.localizedMessage}")
             }
         }
     }
@@ -233,6 +306,7 @@ class MfaViewModel(application: Application) : AndroidViewModel(application) {
         super.onCleared()
         try {
             bluetoothSocket?.close()
+            getApplication<Application>().unregisterReceiver(receiver)
         } catch (_: Exception) {
         }
         bluetoothSocket = null
@@ -257,4 +331,3 @@ private fun String.sha256(): String {
     val hash = digest.digest(toByteArray())
     return hash.joinToString("") { "%02x".format(it) }
 }
-

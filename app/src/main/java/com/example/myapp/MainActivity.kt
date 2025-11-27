@@ -79,14 +79,19 @@ class MainActivity : FragmentActivity() {
                     uiState = uiState,
                     supportsBiometric = supportsBiometric,
                     requestPermissions = { permissionLauncher.launch(requiredBluetoothPermissions()) },
+                    startDiscovery = viewModel::startDiscovery,
                     onAddressChange = viewModel::updateDeviceAddress,
                     connectAction = viewModel::connectToModule,
                     disconnectAction = viewModel::disconnect,
-                    navigateToBiometrics = viewModel::navigateToBiometrics,
+                    navigateToBiometrics = {
+                        // Simplified navigation to always proceed to the Biometrics screen
+                        viewModel.navigateToBiometrics()
+                    },
                     onBiometricRequest = viewModel::onBiometricRequested,
                     startRealBiometric = { biometricHelper.authenticate() },
                     onEmulatedBiometricResult = viewModel::emulateBiometricResult,
                     sendPacket = viewModel::sendAuthPacket,
+                    sendTestData = viewModel::sendTestData,
                     restartFlow = viewModel::restartFlow
                 )
             }
@@ -114,6 +119,7 @@ private fun MfaPrototypeApp(
     uiState: MfaUiState,
     supportsBiometric: Boolean,
     requestPermissions: () -> Unit,
+    startDiscovery: () -> Unit,
     onAddressChange: (String) -> Unit,
     connectAction: () -> Unit,
     disconnectAction: () -> Unit,
@@ -122,8 +128,14 @@ private fun MfaPrototypeApp(
     startRealBiometric: () -> Unit,
     onEmulatedBiometricResult: (Boolean) -> Unit,
     sendPacket: () -> Unit,
+    sendTestData: () -> Unit,
     restartFlow: () -> Unit
 ) {
+    // Automatically set the MAC address on launch for testing
+    LaunchedEffect(Unit) {
+        onAddressChange("00:25:05:50:12:E0")
+    }
+
     Scaffold(
         modifier = Modifier.fillMaxSize(),
         topBar = { TopAppBar(title = { Text("MFA + Arduino Prototype") }) }
@@ -138,10 +150,12 @@ private fun MfaPrototypeApp(
                 modifier = screenModifier,
                 uiState = uiState,
                 requestPermissions = requestPermissions,
+                startDiscovery = startDiscovery,
                 onAddressChange = onAddressChange,
                 connectAction = connectAction,
                 disconnectAction = disconnectAction,
-                navigateToBiometrics = navigateToBiometrics
+                navigateToBiometrics = navigateToBiometrics,
+                sendTestData = sendTestData
             )
 
             MfaScreen.Biometrics -> BiometricScreen(
@@ -168,10 +182,12 @@ private fun BluetoothScreen(
     modifier: Modifier,
     uiState: MfaUiState,
     requestPermissions: () -> Unit,
+    startDiscovery: () -> Unit,
     onAddressChange: (String) -> Unit,
     connectAction: () -> Unit,
     disconnectAction: () -> Unit,
-    navigateToBiometrics: () -> Unit
+    navigateToBiometrics: () -> Unit,
+    sendTestData: () -> Unit
 ) {
     Column(
         modifier = modifier,
@@ -188,6 +204,13 @@ private fun BluetoothScreen(
             label = { Text("HC-05 MAC (AA:BB:CC:DD:EE:FF)") },
             modifier = Modifier.fillMaxWidth()
         )
+        Button(
+            onClick = startDiscovery,
+            modifier = Modifier.fillMaxWidth(),
+            enabled = uiState.hasBluetoothPermission
+        ) {
+            Text("Scan for HC-05")
+        }
         Button(
             onClick = requestPermissions,
             modifier = Modifier.fillMaxWidth()
@@ -208,6 +231,13 @@ private fun BluetoothScreen(
         ) {
             Text("Disconnect")
         }
+        Button(
+            onClick = sendTestData,
+            modifier = Modifier.fillMaxWidth(),
+            enabled = uiState.bluetoothState is BluetoothState.Connected
+        ) {
+            Text("Send Test Data")
+        }
         Text("Status", style = MaterialTheme.typography.labelLarge)
         StatusBadge(label = bluetoothStatusLabel(uiState.bluetoothState))
         Button(
@@ -220,6 +250,7 @@ private fun BluetoothScreen(
     }
 }
 
+@Suppress("UNUSED_VALUE")
 @Composable
 private fun BiometricScreen(
     modifier: Modifier,
@@ -250,8 +281,14 @@ private fun BiometricScreen(
             onClick = {
                 onBiometricRequest()
                 if (supportsBiometric) {
-                    startRealBiometric()
+                    try {
+                        startRealBiometric()
+                    } catch (_: Exception) {
+                        // Fallback to emulation if starting the prompt fails
+                        showDialog = true
+                    }
                 } else {
+                    // Show emulation dialog if biometrics are not supported
                     showDialog = true
                 }
             },
@@ -268,7 +305,8 @@ private fun BiometricScreen(
         }
     }
 
-    if (!supportsBiometric && showDialog) {
+    // Correctly show the dialog when needed
+    if (showDialog) {
         AlertDialog(
             onDismissRequest = { showDialog = false },
             title = { Text("Emulate biometric") },
@@ -360,7 +398,7 @@ private fun bluetoothStatusLabel(state: BluetoothState): String = when (state) {
 
 private fun biometricStatusLabel(state: BiometricState): String = when (state) {
     BiometricState.Idle -> "Biometric: Waiting"
-    BiometricState.Running -> "Biometric: Running..."
+    is BiometricState.Running -> "Biometric: Running..."
     is BiometricState.Success -> "Success via ${state.mode.label}"
     is BiometricState.Failure -> "Failed: ${state.message}"
 }
