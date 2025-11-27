@@ -30,7 +30,6 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -250,7 +249,6 @@ private fun BluetoothScreen(
     }
 }
 
-@Suppress("UNUSED_VALUE")
 @Composable
 private fun BiometricScreen(
     modifier: Modifier,
@@ -261,7 +259,7 @@ private fun BiometricScreen(
     onEmulatedBiometricResult: (Boolean) -> Unit,
     sendPacket: () -> Unit
 ) {
-    var showDialog by remember { mutableStateOf(false) }
+    val showDialogState = remember { mutableStateOf(false) }
 
     Column(
         modifier = modifier,
@@ -285,11 +283,11 @@ private fun BiometricScreen(
                         startRealBiometric()
                     } catch (_: Exception) {
                         // Fallback to emulation if starting the prompt fails
-                        showDialog = true
+                        showDialogState.value = true
                     }
                 } else {
                     // Show emulation dialog if biometrics are not supported
-                    showDialog = true
+                    showDialogState.value = true
                 }
             },
             modifier = Modifier.fillMaxWidth()
@@ -306,14 +304,14 @@ private fun BiometricScreen(
     }
 
     // Correctly show the dialog when needed
-    if (showDialog) {
+    if (showDialogState.value) {
         AlertDialog(
-            onDismissRequest = { showDialog = false },
+            onDismissRequest = { showDialogState.value = false },
             title = { Text("Emulate biometric") },
             text = { Text("Choose Success or Fail to emulate the fingerprint gate.") },
             confirmButton = {
                 TextButton(onClick = {
-                    showDialog = false
+                    showDialogState.value = false
                     onEmulatedBiometricResult(true)
                 }) {
                     Text("Success")
@@ -321,7 +319,7 @@ private fun BiometricScreen(
             },
             dismissButton = {
                 TextButton(onClick = {
-                    showDialog = false
+                    showDialogState.value = false
                     onEmulatedBiometricResult(false)
                 }) {
                     Text("Fail")
